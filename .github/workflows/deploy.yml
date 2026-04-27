@@ -1,0 +1,62 @@
+name: CI/CD Pipeline Frontend
+
+on:
+  push:
+    branches:
+      - main # Cambia esto a 'master' si esa es tu rama principal
+
+jobs:
+  # PASO 2: Integración Continua (CI)
+  build-and-push:
+    name: Construir y Subir a ECR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v3
+
+      - name: Configurar credenciales de AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }} # Vital para el lab
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login en Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Construir y subir imagen Docker
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: app-front
+          IMAGE_TAG: latest
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+  # PASO 3: Despliegue Continuo (CD)
+  deploy:
+    name: Desplegar en Servidor EC2
+    needs: build-and-push # Espera a que la imagen se suba antes de desplegar
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ejecutar comandos en EC2 vía SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,AWS_REGION
+          script: |
+            # 1. Login en ECR desde el servidor
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin 426285946911.dkr.ecr.$AWS_REGION.amazonaws.com
+            
+            # 2. Descargar imagen y levantar contenedor (Frontend)
+            docker compose --profile frontend pull
+            docker compose --profile frontend up -d
