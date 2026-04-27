@@ -1,0 +1,65 @@
+name: Deploy CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and Push Images
+        run: |
+          docker build -t app-front .
+          docker tag app-front:latest ${{ steps.login-ecr.outputs.registry }}/app-front:latest
+          docker push ${{ steps.login-ecr.outputs.registry }}/app-front:latest
+          
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # PASO 1: Pasamos las variables como ambiente al script
+          envs: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_REGION
+          script: |
+              # 1. Login ECR
+              REGION=${{ secrets.AWS_REGION }}
+              REGISTRY="339330298755.dkr.ecr.us-east-1.amazonaws.com"
+              
+              echo "Realizando login en $REGISTRY..."
+              aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $REGISTRY
+              
+              # 2. Verificar que el login funcionó (debe decir Login Succeeded)
+              echo "Login completado, verificando archivos de configuración..."
+              ls -la ~/.docker/config.json || echo "No se encontró el archivo de configuración"
+
+              # 3. Pull y despliegue
+              echo "Descargando imágenes..."
+              docker compose --profile frontend pull
+              docker compose --profile frontend up -d --force-recreate
+        env:
+          # PASO 3: Definimos los valores de esas variables
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
